@@ -56,67 +56,99 @@ ${question}` }] }]
 });
 
 // --- NEW: PDF Question Answering Endpoint (with better logging) ---
+// ... (keep your existing imports and app.use statements)
+
 app.post('/ask', upload.single('pdf'), async (req, res) => {
-  // 1. Validate Input
-  if (!req.file) {
-    return res.status(400).json({ error: 'No PDF file uploaded.' });
-  }
-  if (!req.body.question) {
-    return res.status(400).json({ error: 'No question was provided.' });
-  }
+    console.log('[/ask] Request received.');
 
-  const { question } = req.body;
-  console.log(`Received question: "$
-{question}" for the uploaded PDF.`);
-
-  try {
-    // 2. Extract Text from PDF
-    console.log('Step 1: Parsing PDF...');
-    const dataBuffer = req.file.buffer;
-    const pdfData = await pdf(dataBuffer);
-    const fullPdfText = pdfData.text;
-    console.log(`Successfully extracted
-${fullPdfText.length} characters of text.`);
-
-    // --- TEMPORARY FIX: Truncate text to avoid "Payload Too Large" errors ---
-    const MAX_TEXT_LENGTH = 15000; // A safe character limit for the API request
-    const truncatedText = fullPdfText.substring(0, MAX_TEXT_LENGTH);
-
-    if (fullPdfText.length > MAX_TEXT_LENGTH) {
-      console.warn(`⚠️ PDF text was truncated from ${fullPdfText.length} to${MAX_TEXT_LENGTH} characters to fit the API limit.`);
+    if (!req.file) {
+        console.error('[/ask] No PDF file uploaded.');
+        return res.status(400).json({ error: 'No PDF file uploaded.' });
     }
-    
-    // 3. Construct the Prompt for Gemini
-    console.log('Step 2: Constructing the prompt for Gemini...');
-    const prompt = `
-      You are a world-class medical examination expert. Your task is to analyze the provided text from an official exam specification document and answer the user's question based *only* on the information within that document. Do not use outside knowledge.
 
-      Here is the content from the PDF:
-      ---
-      $
-{truncatedText}
-      ---
+    try {
+        console.log('[/ask] Attempting to parse PDF...');
+        const data = await pdfParse(req.file.buffer);
+        console.log('[/ask] PDF parsed successfully. Extracted text length:', data.text.length);
 
-      Based on the document above, please answer this question: "
-${question}"
-    `;
+        if (!data.text || data.text.trim() === '') {
+            console.error('[/ask] Extracted text is empty or whitespace only.');
+            return res.status(500).json({ error: 'Failed to extract text from PDF.' });
+        }
 
-    // 4. Call Gemini API
-    console.log('Step 3: Calling Gemini API...');
-    const response = await axios.post(GEMINI_API_URL, {
-      contents: [{ parts: [{ text: prompt }] }]
-    }, { headers: { 'Content-Type': 'application/json' } });
+        const question = req.body.question;
+        let documentText = data.text;
+        const MAX_TEXT_LENGTH = 8000; // Keep this consistent
 
-    console.log('Step 4: Successfully received a response from Gemini.');
+        if (documentText.length > MAX_TEXT_LENGTH) {
+            documentText = documentText.substring(0, MAX_TEXT_LENGTH);
+            console.log(`[/ask] Document text truncated to ${MAX_TEXT_LENGTH} characters.`);
+        }
 
-    // 5. Parse and Send the Answer Back
-    if (!response.data.candidates || response.data.candidates.length === 0) {
-      throw new Error('API returned no candidates. The prompt may have been blocked for safety reasons.');
+        const prompt = `You are an expert in medical education, specializing in preparing doctors for the Australian Medical Council (AMC) exam. Your task is to provide concise, accurate, and highly relevant information based *only* on the provided document.
+
+        Document:
+        "${documentText}"
+
+        Question:
+        "${question}"
+
+        Based on the document, please answer the question thoroughly and concisely. If the information is not explicitly available in the document, state "The provided document does not contain information to answer this question."`;
+
+        console.log('[/ask] Sending request to Gemini API. Prompt length:', prompt.length);
+
+        const geminiResponse = await axios.post(
+            `${GEMINI_API_URL}:generateContent`,
+            {
+                contents: [{ parts: [{ text: prompt }] }],
+            },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-goog-api-key': GEMINI_API_KEY,
+                },
+            }
+        );
+
+        console.log('[/ask] Received response from Gemini API. Status:', geminiResponse.status);
+        console.log('[/ask] Gemini API Response Data:', JSON.stringify(geminiResponse.data, null, 2));
+
+
+        const answer = geminiResponse.data.candidates[0]?.content?.parts[0]?.text || 'No answer found.';
+        console.log('[/ask] Answer extracted from Gemini response.');
+
+        res.json({ answer });
+
+    } catch (error) {
+        console.error('[/ask] Error during PDF processing or Gemini API call:', error.message);
+        if (error.response) {
+            // The request was made and the server responded with a status code
+            // that falls out of the range of 2xx
+            console.error('[/ask] Gemini API Error Response Status:', error.response.status);
+            console.error('[/ask] Gemini API Error Response Data:', JSON.stringify(error.response.data, null, 2));
+            // Check for safety attributes
+            if (error.response.data && error.response.data.promptFeedback && error.response.data.promptFeedback.safetyRatings) {
+                console.error('[/ask] Gemini Safety Ratings:', JSON.stringify(error.response.data.promptFeedback.safetyRatings, null, 2));
+                return res.status(500).json({ error: 'Content violated safety guidelines or was blocked by Gemini.' });
+            }
+            if (error.response.data && error.response.data.error) {
+                return res.status(500).json({ error: `Gemini API Error: ${error.response.data.error.message}` });
+            }
+        } else if (error.request) {
+            // The request was made but no response was received
+            console.error('[/ask] No response received from Gemini API:', error.request);
+            return res.status(500).json({ error: 'No response from Gemini API. Check network or API URL.' });
+        } else {
+            // Something happened in setting up the request that triggered an Error
+            console.error('[/ask] Error setting up request:', error.message);
+            return res.status(500).json({ error: `Failed to process the PDF or get an answer. Details: ${error.message}` });
+        }
+        res.status(500).json({ error: 'Failed to process the PDF or get an answer. Check server logs for details.' });
     }
-    const answer = response.data.candidates[0].content.parts[0].text;
-    res.status(200).json({ answer });
+});
 
-  } catch (error) {
+// ... (keep your existing /health and /test-gemini endpoints)
+
     // --- ADVANCED ERROR LOGGING ---
     console.error('\n--- ❌ ASK PDF ENDPOINT CRASHED ❌ ---');
     if (error.response) {
