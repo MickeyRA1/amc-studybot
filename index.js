@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const multer = require('multer');
-const pdf = require('pdf-parse');
+const pdfParse = require('pdf-parse');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -21,8 +21,7 @@ const upload = multer({ storage: storage });
 
 // --- API Key and URL ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$
-{GEMINI_API_KEY}`;
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash`;
 
 // --- Health Check Endpoint ---
 // Responds with server status and checks for API key
@@ -42,10 +41,13 @@ app.post('/chat', async (req, res) => {
   }
 
   try {
-    const response = await axios.post(GEMINI_API_URL, {
-      contents: [{ parts: [{ text: `You are a helpful medical exam tutor. Answer the following question:
-${question}` }] }]
-    }, { headers: { 'Content-Type': 'application/json' } });
+    const response = await axios.post(
+      `${GEMINI_API_URL}:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        contents: [{ parts: [{ text: `You are a helpful medical exam tutor. Answer the following question: ${question}` }] }]
+      },
+      { headers: { 'Content-Type': 'application/json' } }
+    );
     
     const answer = response.data.candidates[0].content.parts[0].text;
     res.json({ answer });
@@ -55,9 +57,7 @@ ${question}` }] }]
   }
 });
 
-// --- NEW: PDF Question Answering Endpoint (with better logging) ---
-// ... (keep your existing imports and app.use statements)
-
+// --- PDF Question Answering Endpoint (with enhanced logging) ---
 app.post('/ask', upload.single('pdf'), async (req, res) => {
     console.log('[/ask] Request received.');
 
@@ -78,7 +78,7 @@ app.post('/ask', upload.single('pdf'), async (req, res) => {
 
         const question = req.body.question;
         let documentText = data.text;
-        const MAX_TEXT_LENGTH = 8000; // Keep this consistent
+        const MAX_TEXT_LENGTH = 8000;
 
         if (documentText.length > MAX_TEXT_LENGTH) {
             documentText = documentText.substring(0, MAX_TEXT_LENGTH);
@@ -98,14 +98,13 @@ app.post('/ask', upload.single('pdf'), async (req, res) => {
         console.log('[/ask] Sending request to Gemini API. Prompt length:', prompt.length);
 
         const geminiResponse = await axios.post(
-            `${GEMINI_API_URL}:generateContent`,
+            `${GEMINI_API_URL}:generateContent?key=${GEMINI_API_KEY}`,
             {
                 contents: [{ parts: [{ text: prompt }] }],
             },
             {
                 headers: {
                     'Content-Type': 'application/json',
-                    'x-goog-api-key': GEMINI_API_KEY,
                 },
             }
         );
@@ -113,20 +112,19 @@ app.post('/ask', upload.single('pdf'), async (req, res) => {
         console.log('[/ask] Received response from Gemini API. Status:', geminiResponse.status);
         console.log('[/ask] Gemini API Response Data:', JSON.stringify(geminiResponse.data, null, 2));
 
-
         const answer = geminiResponse.data.candidates[0]?.content?.parts[0]?.text || 'No answer found.';
         console.log('[/ask] Answer extracted from Gemini response.');
 
         res.json({ answer });
 
     } catch (error) {
+        console.error('\n--- ❌ ASK PDF ENDPOINT ERROR ❌ ---');
         console.error('[/ask] Error during PDF processing or Gemini API call:', error.message);
+        
         if (error.response) {
-            // The request was made and the server responded with a status code
-            // that falls out of the range of 2xx
             console.error('[/ask] Gemini API Error Response Status:', error.response.status);
             console.error('[/ask] Gemini API Error Response Data:', JSON.stringify(error.response.data, null, 2));
-            // Check for safety attributes
+            
             if (error.response.data && error.response.data.promptFeedback && error.response.data.promptFeedback.safetyRatings) {
                 console.error('[/ask] Gemini Safety Ratings:', JSON.stringify(error.response.data.promptFeedback.safetyRatings, null, 2));
                 return res.status(500).json({ error: 'Content violated safety guidelines or was blocked by Gemini.' });
@@ -135,37 +133,18 @@ app.post('/ask', upload.single('pdf'), async (req, res) => {
                 return res.status(500).json({ error: `Gemini API Error: ${error.response.data.error.message}` });
             }
         } else if (error.request) {
-            // The request was made but no response was received
             console.error('[/ask] No response received from Gemini API:', error.request);
             return res.status(500).json({ error: 'No response from Gemini API. Check network or API URL.' });
         } else {
-            // Something happened in setting up the request that triggered an Error
             console.error('[/ask] Error setting up request:', error.message);
-            return res.status(500).json({ error: `Failed to process the PDF or get an answer. Details: ${error.message}` });
         }
+        
+        console.error('---------------------------------------\n');
         res.status(500).json({ error: 'Failed to process the PDF or get an answer. Check server logs for details.' });
     }
 });
 
-// ... (keep your existing /health and /test-gemini endpoints)
-
-    // --- ADVANCED ERROR LOGGING ---
-    console.error('\n--- ❌ ASK PDF ENDPOINT CRASHED ❌ ---');
-    if (error.response) {
-      // This is an error from the Gemini API (e.g., 400 Bad Request, 429 Rate Limit)
-      console.error('API Error Status:', error.response.status);
-      console.error('API Error Data:', JSON.stringify(error.response.data, null, 2));
-    } else {
-      // This is a server-side error (e.g., PDF parsing failed, code issue)
-      console.error('Server-Side Error:', error.message);
-    }
-    console.error('---------------------------------------\n');
-    res.status(500).json({ error: 'Failed to process the PDF or get an answer. Check server logs for details.' });
-  }
-});
-
 // --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`Server listening on port $
-{PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
